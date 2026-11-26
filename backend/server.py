@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +26,7 @@ for p in (str(ROOT), str(LAMBDAS_DIR)):
 
 from away_watchdog.handler import check_overdue_outside_persons
 from backend.postgres_repository import PostgresStateRepository
+from backend.stream_manager import LiveStreamHub
 from dashboard_api.handler import handle_dashboard_request
 from ingest_processor.handler import process_crossing_payload
 from shared.repository import StateRepository
@@ -97,6 +99,31 @@ app.add_middleware(
 )
 
 app.mount("/snapshots", StaticFiles(directory=str(SNAPSHOTS_DIR)), name="snapshots")
+stream_hub = LiveStreamHub()
+
+
+@app.post("/ingest/frame/{camera_id}")
+async def ingest_live_frame(camera_id: str, request: Request) -> Dict[str, str]:
+    _check_edge_key(request)
+    jpeg_bytes = await request.body()
+    if jpeg_bytes:
+        stream_hub.push_jpeg(camera_id, jpeg_bytes)
+    return {"status": "ok", "camera_id": camera_id}
+
+
+@app.get("/api/streams/{camera_id}/snapshot")
+def get_camera_snapshot(camera_id: str) -> Response:
+    jpg = stream_hub.get_latest_jpeg(camera_id)
+    return Response(content=jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/streams/{camera_id}/mjpeg")
+def stream_camera_mjpeg(camera_id: str) -> StreamingResponse:
+    return StreamingResponse(
+        stream_hub.mjpeg_generator(camera_id, fps=8.0),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/health")

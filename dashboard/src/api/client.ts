@@ -126,6 +126,14 @@ export async function runDemoScenario(session: AuthSession): Promise<{ events_in
   return handleResponse<{ events_ingested: number }>(resp);
 }
 
+export function getStreamMjpegUrl(cameraId: string): string {
+  return API_BASE ? `${API_BASE}/api/streams/${cameraId}/mjpeg` : `/api/streams/${cameraId}/mjpeg`;
+}
+
+export function getStreamSnapshotUrl(cameraId: string): string {
+  return API_BASE ? `${API_BASE}/api/streams/${cameraId}/snapshot` : `/api/streams/${cameraId}/snapshot`;
+}
+
 export function resolveSnapshotUrl(urlOrKey?: string | null): string | null {
   if (!urlOrKey) return null;
   if (urlOrKey.startsWith('http://') || urlOrKey.startsWith('https://') || urlOrKey.startsWith('data:')) {

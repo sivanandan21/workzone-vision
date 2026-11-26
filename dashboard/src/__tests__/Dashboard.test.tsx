@@ -1,101 +1,59 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { RoomStatusBoard } from '../components/RoomStatusBoard';
-import { MovementLogsTable } from '../components/MovementLogsTable';
-import type { ActivePersonState, MovementLog } from '../types/workzone';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import App from '../App';
 
-describe('RoomStatusBoard', () => {
-  it('shows live ticking away timer only for OUTSIDE persons and marks overdue', () => {
-    const nowMs = Date.parse('2026-11-26T10:20:00Z');
-    const persons: ActivePersonState[] = [
-      {
-        person_id: '001',
-        display_name: 'Student 1',
-        current_zone: 'OUTSIDE',
-        last_exit_time: '2026-11-26T10:00:00Z',
-        last_entry_time: '2026-11-26T09:00:00Z',
-        last_exit_log_id: 'log-exit-1',
-        last_camera_id: 'cam_1',
-        away_alert_sent: false,
-        updated_at: '2026-11-26T10:00:00Z',
-      },
-      {
-        person_id: '002',
-        display_name: 'Student 2',
-        current_zone: 'IN_ROOM_2',
-        last_exit_time: null,
-        last_entry_time: '2026-11-26T09:05:00Z',
-        last_exit_log_id: null,
-        last_camera_id: 'cam_2',
-        away_alert_sent: false,
-        updated_at: '2026-11-26T09:10:00Z',
-      },
-    ];
+describe('WorkZone Vision Simple Monitor UI', () => {
+  it('renders exact Simple Monitor header and both live camera cards', () => {
+    render(<App />);
 
-    render(<RoomStatusBoard persons={persons} nowMs={nowMs} awayThresholdSeconds={900} />);
-
-    expect(screen.getByTestId('away-timer-001')).toHaveTextContent('20:00');
-    expect(screen.getByText('OVERDUE')).toBeInTheDocument();
-    expect(screen.getByText(/Student 2 \(002\)/)).toBeInTheDocument();
-    expect(screen.getByText(/Internal shift logged/i)).toBeInTheDocument();
+    expect(screen.getByText(/WorkZone Vision/i)).toBeInTheDocument();
+    expect(screen.getByText(/Simple Monitor/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Generate Report/i })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /Live Feed/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('Live Camera Detection')).toBeInTheDocument();
+    expect(screen.getByText('Camera 1 (Room 1 Main Entry/Exit)')).toBeInTheDocument();
+    expect(screen.getByText('Camera 2 (Room 2 Connecting Door)')).toBeInTheDocument();
+    expect(screen.getAllByText('LIVE')).toHaveLength(2);
   });
-});
 
-describe('MovementLogsTable RBAC', () => {
-  const sampleLogs: MovementLog[] = [
-    {
-      log_id: 'log-12345678',
-      event_id: 'evt-1',
-      timestamp: '2026-11-26T10:05:00Z',
-      person_id: '001',
-      display_name: 'Student 1',
-      camera_id: 'cam_1',
-      event_type: 'CAMPUS_RETURN',
-      from_zone: 'OUTSIDE',
-      to_zone: 'IN_ROOM_1',
-      away_duration_seconds: 300,
-      snapshot_s3_key: 'snapshots/001_cam_1.jpg',
-      confidence: 0.94,
-      verification_status: 'AUTO_MATCHED',
-      verified_by: null,
-      remarks: null,
-      paired_exit_log_id: 'log-exit',
-      audit_history: [],
-    },
-  ];
+  it('switches streams between LIVE MJPEG and PAUSED snapshots when toggling Live Feed', () => {
+    render(<App />);
+    const toggle = screen.getByRole('switch', { name: /Live Feed/i });
+    const cam1Img = screen.getByAltText('Camera 1 (Room 1 Main Entry/Exit)') as HTMLImageElement;
+    expect(cam1Img.src).toContain('/api/streams/cam_1/mjpeg');
 
-  it('shows Verify/Flag/Adjust buttons for Authorities role and hides them for Viewers', () => {
-    const noop = vi.fn();
-    const { rerender } = render(
-      <MovementLogsTable
-        logs={sampleLogs}
-        userRole="Authorities"
-        statusFilter="ALL"
-        personFilter=""
-        onStatusFilterChange={noop}
-        onPersonFilterChange={noop}
-        onAction={noop}
-        onPreviewSnapshot={noop}
-        onExportCsv={noop}
-      />,
-    );
-    expect(screen.getByRole('button', { name: /Verify/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Flag/i })).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getAllByText('PAUSED')).toHaveLength(2);
+    expect(cam1Img.src).toContain('/api/streams/cam_1/snapshot');
+  });
 
-    rerender(
-      <MovementLogsTable
-        logs={sampleLogs}
-        userRole="Viewers"
-        statusFilter="ALL"
-        personFilter=""
-        onStatusFilterChange={noop}
-        onPersonFilterChange={noop}
-        onAction={noop}
-        onPreviewSnapshot={noop}
-        onExportCsv={noop}
-      />,
-    );
-    expect(screen.queryByRole('button', { name: /Verify/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Read-only \(Viewer\)/i)).toBeInTheDocument();
+  it('triggers CSV download when clicking Generate Report', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'log_id,timestamp,person_id\n',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const createUrlMock = vi.fn(() => 'blob:mock-csv');
+    const revokeUrlMock = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { value: createUrlMock, configurable: true });
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeUrlMock, configurable: true });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: /Generate Report/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/logs/export'),
+        expect.any(Object),
+      );
+      expect(createUrlMock).toHaveBeenCalled();
+      expect(clickSpy).toHaveBeenCalled();
+      expect(revokeUrlMock).toHaveBeenCalledWith('blob:mock-csv');
+    });
+
+    clickSpy.mockRestore();
+    vi.unstubAllGlobals();
   });
 });

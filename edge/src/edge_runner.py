@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional
 import uuid
 import cv2
+import numpy as np
 
 from edge.src.capture import FramePacket, LatestFrameStream, SequentialVideoReader
 from edge.src.config import SystemConfig
@@ -69,7 +70,64 @@ class EdgePipelineProcessor:
         if not crossings and self.publisher.queue.pending_count() > 0:
             self.publisher.flush_pending()
 
+        self._maybe_push_live_preview(cam_id, frame_bgr, tracked, w, h)
         return emitted
+
+    def _maybe_push_live_preview(
+        self,
+        cam_id: str,
+        frame_bgr: np.ndarray,
+        tracked: list,
+        frame_w: int,
+        frame_h: int,
+    ) -> None:
+        """Best-effort push of annotated live frame to EC2 backend MJPEG hub when transport=https."""
+        if self.config.cloud.transport.lower() != "https" or not self.config.cloud.api_endpoint:
+            return
+        try:
+            import urllib.request
+            from edge.src.vision_utils import annotate_monitor_frame
+
+            boxes_labels = []
+            for obj in tracked:
+                key = (cam_id, obj.track_id)
+                pid_tuple = self.reid._track_to_person.get(key)
+                label = f"S-{pid_tuple[0]}" if pid_tuple else f"T-{obj.track_id}"
+                boxes_labels.append((tuple(obj.box_xyxy.tolist()), label))
+
+            tripwire_seg = None
+            tw_cfg = self.config.cameras[cam_id].tripwire
+            if cam_id == "cam_1":
+                if tw_cfg.normalized:
+                    p1 = (int(tw_cfg.p1[0] * frame_w), int(tw_cfg.p1[1] * frame_h))
+                    p2 = (int(tw_cfg.p2[0] * frame_w), int(tw_cfg.p2[1] * frame_h))
+                else:
+                    p1 = (int(tw_cfg.p1[0]), int(tw_cfg.p1[1]))
+                    p2 = (int(tw_cfg.p2[0]), int(tw_cfg.p2[1]))
+                tripwire_seg = (p1, p2)
+
+            annotated = annotate_monitor_frame(
+                frame_bgr,
+                boxes_with_labels=boxes_labels,
+                tripwire_segment=tripwire_seg,
+                tripwire_label="tripwire" if tripwire_seg else "",
+            )
+            ok, buf = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+            if not ok:
+                return
+            url = f"{self.config.cloud.api_endpoint.rstrip('/')}/ingest/frame/{cam_id}"
+            req = urllib.request.Request(
+                url,
+                data=buf.tobytes(),
+                headers={
+                    "Content-Type": "image/jpeg",
+                    "X-Edge-Api-Key": self.config.cloud.api_key,
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=0.5).close()
+        except Exception:
+            pass
 
     def _handle_crossing(
         self,

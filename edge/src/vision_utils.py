@@ -5,7 +5,7 @@ Derived directly from VEXDET (sivanandan21/VEXDET) without heavy PyTorch depende
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
@@ -98,3 +98,59 @@ def deduplicate_detections(
         class_ids[kept],
         [class_names[i] for i in keep_indices],
     )
+
+
+def annotate_monitor_frame(
+    frame_bgr: np.ndarray,
+    boxes_with_labels: List[Tuple[Tuple[float, float, float, float], str]],
+    tripwire_segment: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None,
+    tripwire_label: str = "tripwire",
+) -> np.ndarray:
+    """Draw green bounding boxes with green badge labels and optional blue doorway tripwire."""
+    canvas = frame_bgr.copy()
+
+    if tripwire_segment is not None:
+        (x1, y1), (x2, y2) = tripwire_segment
+        overlay = canvas.copy()
+        cv2.line(overlay, (x1, y1), (x2, y2), (240, 175, 60), 14, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.28, canvas, 0.72, 0, canvas)
+        cv2.line(canvas, (x1, y1), (x2, y2), (245, 195, 90), 2, cv2.LINE_AA)
+        cv2.line(canvas, (x1, y1 - 10), (x1, y1 + 10), (245, 195, 90), 2, cv2.LINE_AA)
+        cv2.line(canvas, (x2, y2 - 10), (x2, y2 + 10), (245, 195, 90), 2, cv2.LINE_AA)
+
+        if tripwire_label:
+            mx = (x1 + x2) // 2
+            my = (y1 + y2) // 2
+            (tw, th), _ = cv2.getTextSize(tripwire_label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.putText(
+                canvas,
+                tripwire_label,
+                (mx - tw // 2, my + th // 2 - 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+    for (bx1, by1, bx2, by2), label in boxes_with_labels:
+        ix1, iy1, ix2, iy2 = int(bx1), int(by1), int(bx2), int(by2)
+        box_color = (95, 235, 95)
+        cv2.rectangle(canvas, (ix1, iy1), (ix2, iy2), box_color, 2, cv2.LINE_AA)
+
+        (lw, lh), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
+        tag_y1 = max(0, iy1 - lh - baseline - 6)
+        tag_x2 = min(canvas.shape[1] - 1, ix1 + lw + 10)
+        cv2.rectangle(canvas, (ix1, tag_y1), (tag_x2, iy1), box_color, -1)
+        cv2.putText(
+            canvas,
+            label,
+            (ix1 + 5, iy1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (15, 35, 15),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return canvas
