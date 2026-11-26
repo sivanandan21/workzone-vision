@@ -183,8 +183,12 @@ class IndependentCameraTracker:
 
         try:
             import supervision as sv
-            self._sv_tracker = sv.ByteTrack()
-        except ImportError:
+            byte_track_cls = getattr(sv, "ByteTrack", None)
+            if byte_track_cls is not None:
+                self._sv_tracker = byte_track_cls()
+            else:
+                self._builtin_tracker = _BuiltinByteTracker()
+        except Exception:
             self._builtin_tracker = _BuiltinByteTracker()
 
     def update(self, frame_bgr: np.ndarray, detections: DetectionBatch) -> List[TrackedObject]:

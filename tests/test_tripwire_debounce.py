@@ -49,3 +49,28 @@ def test_bidirectional_crossing_and_debounce() -> None:
     c2 = zone.update([_track(1, 300.0, 190.0)], 640, 480, timestamp_epoch=8.0)
     assert len(c2) == 1
     assert c2[0].direction == "OUTWARD"
+
+
+def test_tracker_falls_back_when_supervision_lacks_bytetrack(monkeypatch) -> None:
+    import sys
+    import types
+    from edge.src.detector import DetectionBatch
+    from edge.src.tracker import IndependentCameraTracker
+
+    fake_sv = types.ModuleType("supervision")
+    monkeypatch.setitem(sys.modules, "supervision", fake_sv)
+
+    tracker = IndependentCameraTracker("cam_1")
+    assert tracker._sv_tracker is None
+    assert tracker._builtin_tracker is not None
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    batch = DetectionBatch(
+        boxes_xyxy=np.array([[100.0, 60.0, 160.0, 200.0]], dtype=np.float32),
+        scores=np.array([0.9], dtype=np.float32),
+        class_ids=np.array([0], dtype=np.int32),
+        class_names=["person"],
+    )
+    tracked = tracker.update(frame, batch)
+    assert len(tracked) == 1
+    assert tracked[0].track_id >= 1
