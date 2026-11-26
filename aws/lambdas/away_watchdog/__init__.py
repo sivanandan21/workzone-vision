@@ -1,0 +1,1 @@
+# Away watchdog Lambda package

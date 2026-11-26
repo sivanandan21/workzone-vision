@@ -1,0 +1,81 @@
+# WorkZone Vision — 2-Camera Nested-Zone Configuration
+
+vexdet:
+  onnx_path: "models/vexdet.onnx"
+  model_name: "RFDETRNano" # Allowed Apache-2.0 models: RFDETRNano, RFDETRSmall, RFDETRMedium, RFDETRLarge
+  target_classes:
+    - "person"
+  custom_class_map:
+    student_1: "001"
+    student_2: "002"
+  confidence_threshold: 0.40
+  dedup_iou_threshold: 0.50
+  blur_threshold: 100.0
+  enable_clahe: true
+  clahe_clip_limit: 2.0
+  clahe_tile_grid: [8, 8]
+  input_size: [560, 560]
+
+cameras:
+  cam_1:
+    id: "cam_1"
+    name: "Room 1 - Main Entry/Exit"
+    room: "IN_ROOM_1"
+    source: "data/raw_videos/cam1.mp4"
+    target_fps: 8.0
+    tripwire:
+      # Main Entry/Exit doorway line inside Camera 1 view (pixel coords at 640x480 reference or normalized 0..1)
+      normalized: true
+      p1: [0.20, 0.55]
+      p2: [0.80, 0.55]
+      # Normal pointing INTO Room 1 (OUTSIDE -> IN_ROOM_1)
+      inward_normal: [0.0, 1.0]
+      debounce_seconds: 4.0
+      deadband_ratio: 0.02
+
+  cam_2:
+    id: "cam_2"
+    name: "Room 2 - Connecting Door"
+    room: "IN_ROOM_2"
+    source: "data/raw_videos/cam2.mp4"
+    target_fps: 8.0
+    tripwire:
+      # Connecting Door line mounted inside Room 2 facing Room 2
+      normalized: true
+      p1: [0.20, 0.45]
+      p2: [0.80, 0.45]
+      # Normal pointing INTO Room 2 (IN_ROOM_1 -> IN_ROOM_2)
+      inward_normal: [0.0, 1.0]
+      debounce_seconds: 4.0
+      deadband_ratio: 0.02
+
+reid:
+  strict_target_mode: true
+  allow_unknown_fallback: false
+  face_match_threshold: 0.42
+  appearance_match_threshold: 0.68
+  combined_match_threshold: 0.58
+  match_margin_threshold: 0.06
+  cross_camera_window_seconds: 15
+  face_detector_onnx: "models/face_detection_yunet_2023mar.onnx"
+  face_recognizer_onnx: "models/face_recognition_sface_2021dec.onnx"
+  appearance_reid_onnx: "models/reid_appearance.onnx"
+  enrolled_students:
+    "001":
+      display_name: "Student 1"
+      custom_class_label: "student_1"
+      references_dir: "data/enrolled_students/student_1"
+    "002":
+      display_name: "Student 2"
+      custom_class_label: "student_2"
+      references_dir: "data/enrolled_students/student_2"
+
+cloud:
+  transport: "mock" # "mock" | "https" | "iot_mqtt"
+  api_endpoint: "http://localhost:8000"
+  iot_endpoint: ""
+  iot_topic: "workzone/crossings"
+  away_alert_threshold_seconds: 900
+  offline_db_path: "edge/data/outbox.db"
+  snapshots_dir: "edge/data/snapshots"
+  local_state_db_path: "edge/data/local_state.db"

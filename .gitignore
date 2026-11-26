@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Dashboard
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+
+# Environment & Secrets
+.env
+.env.local
+aws/.sam/
+samconfig.toml
+
+# Models & Runtime Artifacts
+models/*.onnx
+models/*.pt
+models/*.pth
+edge/data/
+data/raw_videos/
+data/enrolled_students/*/
+!data/enrolled_students/.gitkeep
+!models/.gitkeep
+runs/
+*.db
+*.sqlite*
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

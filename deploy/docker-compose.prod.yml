@@ -1,0 +1,90 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: workzone-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-workzone_vision}
+      POSTGRES_USER: ${POSTGRES_USER:-workzone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - workzone_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-workzone} -d ${POSTGRES_DB:-workzone_vision}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: workzone-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-workzone}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-workzone_vision}
+      SNAPSHOTS_DIR: /app/edge/data/snapshots
+      VEXDET_ONNX_PATH: ${VEXDET_ONNX_PATH:-/app/models/vexdet.onnx}
+      AWAY_ALERT_THRESHOLD_SECONDS: ${AWAY_ALERT_THRESHOLD_SECONDS:-900}
+      EDGE_INGEST_API_KEY: ${EDGE_INGEST_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    volumes:
+      - workzone_snapshots:/app/edge/data/snapshots
+      - /opt/workzone-vision/models:/app/models:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_AUTH_MODE: ${VITE_AUTH_MODE:-local_mock}
+    container_name: workzone-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+
+  edge:
+    build:
+      context: ..
+      dockerfile: edge/Dockerfile
+    container_name: workzone-edge
+    profiles: ["live-cameras"]
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      WORKZONE_TRANSPORT: https
+      WORKZONE_CONFIG_PATH: /app/configs/system_config.yaml
+      AWS_API_ENDPOINT: http://backend:8000
+      AWS_API_KEY: ${EDGE_INGEST_API_KEY:-}
+      VEXDET_ONNX_PATH: ${VEXDET_ONNX_PATH:-/app/models/vexdet.onnx}
+      CAM_1_SOURCE: ${CAM_1_SOURCE:-rtsp://admin:password@192.168.1.101:554/stream1}
+      CAM_2_SOURCE: ${CAM_2_SOURCE:-rtsp://admin:password@192.168.1.102:554/stream1}
+      STRICT_TARGET_MODE: ${STRICT_TARGET_MODE:-true}
+    volumes:
+      - workzone_edge_outbox:/app/edge/data
+      - /opt/workzone-vision/models:/app/models:ro
+      - /opt/workzone-vision/enrolled_students:/app/data/enrolled_students:ro
+
+volumes:
+  workzone_pgdata:
+    name: workzone_pgdata
+  workzone_snapshots:
+    name: workzone_snapshots
+  workzone_edge_outbox:
+    name: workzone_edge_outbox

@@ -1,0 +1,362 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  WorkZone Vision — 2-Camera Nested-Zone Movement Tracking & AWS Authority Verification System.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+  AwayAlertThresholdSeconds:
+    Type: Number
+    Default: 900
+    Description: Alert via SNS when a person stays outside Room 1 longer than this threshold (seconds).
+  SnapshotExpirationDays:
+    Type: Number
+    Default: 30
+    Description: S3 lifecycle expiration days for crossing snapshot crops.
+  EdgeIngestApiKey:
+    Type: String
+    NoEcho: true
+    Default: dev-edge-key-change-me
+  AlertNotificationEmail:
+    Type: String
+    Default: ""
+    Description: Optional email subscribed to SNS away-duration alerts.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertNotificationEmail, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 15
+    MemorySize: 256
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        ACTIVE_STATE_TABLE: !Ref ActivePersonStateTable
+        MOVEMENT_LOGS_TABLE: !Ref MovementLogsTable
+        PROCESSED_EVENTS_TABLE: !Ref ProcessedEdgeEventsTable
+        SNAPSHOTS_BUCKET: !Ref WorkZoneSnapshotsBucket
+        AWAY_ALERTS_TOPIC_ARN: !Ref AwayAlertsTopic
+        AWAY_ALERT_THRESHOLD_SECONDS: !Ref AwayAlertThresholdSeconds
+        EDGE_INGEST_API_KEY: !Ref EdgeIngestApiKey
+
+Resources:
+  # =========================================================
+  # DynamoDB Tables
+  # =========================================================
+  ActivePersonStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "workzone-active-state-${EnvironmentName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: person_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: person_id
+          KeyType: HASH
+
+  MovementLogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "workzone-movement-logs-${EnvironmentName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: log_id
+          AttributeType: S
+        - AttributeName: gsi_pk
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: person_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: log_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: TimestampIndex
+          KeySchema:
+            - AttributeName: gsi_pk
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: PersonTimeIndex
+          KeySchema:
+            - AttributeName: person_id
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  ProcessedEdgeEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "workzone-processed-events-${EnvironmentName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: event_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: event_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl_epoch
+        Enabled: true
+
+  # =========================================================
+  # S3 Snapshot Storage (with automatic expiration)
+  # =========================================================
+  WorkZoneSnapshotsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireCrossingSnapshots
+            Status: Enabled
+            Prefix: snapshots/
+            ExpirationInDays: !Ref SnapshotExpirationDays
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: ["GET", "PUT"]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+
+  # =========================================================
+  # SNS Away-Duration Alerts
+  # =========================================================
+  AwayAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "workzone-away-alerts-${EnvironmentName}"
+
+  AwayAlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AwayAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertNotificationEmail
+
+  # =========================================================
+  # Cognito RBAC Authentication
+  # =========================================================
+  WorkZoneUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "workzone-users-${EnvironmentName}"
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  WorkZoneUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: workzone-dashboard-client
+      UserPoolId: !Ref WorkZoneUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  AuthoritiesGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Authorities
+      Description: Can verify, flag, reassign, and adjust timestamps on movement logs.
+      UserPoolId: !Ref WorkZoneUserPool
+
+  ViewersGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Viewers
+      Description: Read-only dashboard monitoring role.
+      UserPoolId: !Ref WorkZoneUserPool
+
+  # =========================================================
+  # HTTP API Gateway
+  # =========================================================
+  WorkZoneHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref EnvironmentName
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PATCH
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+          - X-Edge-Api-Key
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${WorkZoneUserPool}"
+              audience:
+                - !Ref WorkZoneUserPoolClient
+
+  # =========================================================
+  # Lambda Functions
+  # =========================================================
+  IngestProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/
+      Handler: ingest_processor.handler.lambda_handler
+      Description: Processes edge crossing events, updates DynamoDB state, computes away durations, and emits SNS alerts.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ActivePersonStateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MovementLogsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProcessedEdgeEventsTable
+        - S3CrudPolicy:
+            BucketName: !Ref WorkZoneSnapshotsBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AwayAlertsTopic.TopicName
+      Events:
+        HttpIngestCrossing:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /ingest/crossing
+            Method: POST
+        HttpPresignSnapshot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /ingest/presign
+            Method: POST
+        IoTCrossingRule:
+          Type: IoTRule
+          Properties:
+            Sql: "SELECT * FROM 'workzone/crossings'"
+
+  AwayWatchdogFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/
+      Handler: away_watchdog.handler.lambda_handler
+      Description: Periodically scans ActivePersonState for OUTSIDE persons exceeding away alert threshold.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ActivePersonStateTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AwayAlertsTopic.TopicName
+      Events:
+        MinuteWatchdog:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+
+  DashboardApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/
+      Handler: dashboard_api.handler.lambda_handler
+      Description: Serves live room states, movement logs, S3 presigned previews, and Authority verification actions.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ActivePersonStateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MovementLogsTable
+        - S3ReadPolicy:
+            BucketName: !Ref WorkZoneSnapshotsBucket
+      Events:
+        GetState:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /api/state
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+        GetLogs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /api/logs
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+        VerifyLog:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /api/logs/{log_id}/verify
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        FlagLog:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /api/logs/{log_id}/flag
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        AdjustLog:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /api/logs/{log_id}/adjust
+            Method: PATCH
+            Auth:
+              Authorizer: CognitoAuthorizer
+        ExportLogsCsv:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WorkZoneHttpApi
+            Path: /api/logs/export
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+Outputs:
+  ApiEndpoint:
+    Description: HTTP API Gateway base URL
+    Value: !Sub "https://${WorkZoneHttpApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}"
+  SnapshotsBucketName:
+    Description: S3 bucket for crossing snapshot crops
+    Value: !Ref WorkZoneSnapshotsBucket
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID for Dashboard RBAC
+    Value: !Ref WorkZoneUserPool
+  CognitoClientId:
+    Description: Cognito App Client ID
+    Value: !Ref WorkZoneUserPoolClient
+  AwayAlertsTopicArn:
+    Description: SNS topic ARN for away-duration notifications
+    Value: !Ref AwayAlertsTopic
