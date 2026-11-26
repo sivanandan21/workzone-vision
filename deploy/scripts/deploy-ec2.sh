@@ -10,7 +10,7 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 echo "=== Deploying WorkZone Vision (PostgreSQL + Backend + Dashboard) ==="
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --remove-orphans
+docker compose -p workzone-vision --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --remove-orphans
 
 echo "Waiting for health check at http://127.0.0.1/api/health ..."
 for i in $(seq 1 30); do
@@ -25,5 +25,5 @@ for i in $(seq 1 30); do
 done
 
 echo "ERROR: Backend health check failed after 60s."
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 backend frontend postgres
+docker compose -p workzone-vision --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 backend frontend postgres
 exit 1

@@ -22,10 +22,10 @@ pipeline {
         stage('Python Edge, State Machine & PostgreSQL Tests') {
             steps {
                 sh '''
-                    docker run --rm -v "$PWD:/app" -w /app python:3.11-slim bash -c "
+                    docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/app" -w /app python:3.11-slim bash -c "
                         apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 libgl1 &&
                         pip install --no-cache-dir -r edge/requirements.txt -r aws/lambdas/requirements.txt -r backend/requirements.txt pytest &&
-                        pytest tests/ -v --tb=short
+                        pytest tests/ -o cache_dir=/tmp/pytest_cache -v --tb=short
                     "
                 '''
             }
@@ -34,7 +34,7 @@ pipeline {
         stage('Dashboard Typecheck, Vitest & Build') {
             steps {
                 sh '''
-                    docker run --rm -v "$PWD/dashboard:/app" -w /app node:22-alpine sh -c "
+                    docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm -v "$PWD/dashboard:/app" -w /app node:22-alpine sh -c "
                         npm ci && npx tsc --noEmit && npm test -- --run && npm run build
                     "
                 '''
@@ -43,7 +43,9 @@ pipeline {
 
         stage('Deploy PostgreSQL + Backend + Dashboard on EC2') {
             when {
-                branch 'main'
+                expression {
+                    !env.BRANCH_NAME || env.BRANCH_NAME == 'main' || env.GIT_BRANCH == 'origin/main' || env.GIT_BRANCH == 'main'
+                }
             }
             steps {
                 sh 'bash deploy/scripts/deploy-ec2.sh'
