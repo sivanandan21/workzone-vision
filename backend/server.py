@@ -111,6 +111,11 @@ async def ingest_live_frame(camera_id: str, request: Request) -> Dict[str, str]:
     return {"status": "ok", "camera_id": camera_id}
 
 
+@app.get("/api/streams/status")
+def get_streams_status() -> Dict[str, Any]:
+    return stream_hub.get_status()
+
+
 @app.get("/api/streams/{camera_id}/snapshot")
 def get_camera_snapshot(camera_id: str) -> Response:
     jpg = stream_hub.get_latest_jpeg(camera_id)

@@ -1,6 +1,12 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { FileText, RefreshCw, Shield } from 'lucide-react';
-import { exportLogsCsv, getStreamMjpegUrl, getStreamSnapshotUrl } from './api/client';
+import {
+  exportLogsCsv,
+  fetchStreamStatus,
+  getStreamMjpegUrl,
+  getStreamSnapshotUrl,
+  type StreamStatusResponse,
+} from './api/client';
 import type { AuthSession } from './types/workzone';
 
 const DEFAULT_SESSION: AuthSession = {
@@ -12,6 +18,25 @@ export function App() {
   const [liveFeed, setLiveFeed] = useState<boolean>(true);
   const [streamVersion, setStreamVersion] = useState<number>(() => Date.now());
   const [exporting, setExporting] = useState<boolean>(false);
+  const [streamStatus, setStreamStatus] = useState<StreamStatusResponse>({
+    cam_1: { live: false, frames_received: 0, last_frame_age_sec: null },
+    cam_2: { live: false, frames_received: 0, last_frame_age_sec: null },
+  });
+
+  const pollStatus = useCallback(async () => {
+    try {
+      const status = await fetchStreamStatus();
+      setStreamStatus(status);
+    } catch {
+      // Preserve last known status if offline
+    }
+  }, []);
+
+  useEffect(() => {
+    void pollStatus();
+    const timer = setInterval(() => void pollStatus(), 3000);
+    return () => clearInterval(timer);
+  }, [pollStatus]);
 
   const handleGenerateReport = async () => {
     setExporting(true);
@@ -33,6 +58,7 @@ export function App() {
 
   const handleRefresh = () => {
     setStreamVersion(Date.now());
+    void pollStatus();
   };
 
   const cam1Src = liveFeed
@@ -41,6 +67,28 @@ export function App() {
   const cam2Src = liveFeed
     ? `${getStreamMjpegUrl('cam_2')}?v=${streamVersion}`
     : `${getStreamSnapshotUrl('cam_2')}?v=${streamVersion}`;
+
+  const renderBadge = (camId: 'cam_1' | 'cam_2') => {
+    if (!liveFeed) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-slate-600 px-2 py-0.5 text-[10px] font-bold tracking-wide text-white">
+          <span className="h-1.5 w-1.5 rounded-full bg-white" />
+          PAUSED
+        </span>
+      );
+    }
+    const isCamLive = streamStatus[camId]?.live;
+    return (
+      <span
+        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold tracking-wide text-white ${
+          isCamLive ? 'bg-red-600' : 'bg-slate-700'
+        }`}
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-white" />
+        {isCamLive ? 'LIVE' : 'STANDBY'}
+      </span>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#0f1624] text-slate-100">
@@ -112,16 +160,9 @@ export function App() {
                 <span className="text-xs font-medium text-slate-200">
                   Camera 1 (Room 1 Main Entry/Exit)
                 </span>
-                <span
-                  className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold tracking-wide text-white ${
-                    liveFeed ? 'bg-red-600' : 'bg-slate-600'
-                  }`}
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-white" />
-                  {liveFeed ? 'LIVE' : 'PAUSED'}
-                </span>
+                {renderBadge('cam_1')}
               </div>
-              <div className="aspect-[16/10] w-full bg-black">
+              <div className="aspect-[16/10] w-full bg-[#0c121e]">
                 <img
                   src={cam1Src}
                   alt="Camera 1 (Room 1 Main Entry/Exit)"
@@ -136,16 +177,9 @@ export function App() {
                 <span className="text-xs font-medium text-slate-200">
                   Camera 2 (Room 2 Connecting Door)
                 </span>
-                <span
-                  className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold tracking-wide text-white ${
-                    liveFeed ? 'bg-red-600' : 'bg-slate-600'
-                  }`}
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-white" />
-                  {liveFeed ? 'LIVE' : 'PAUSED'}
-                </span>
+                {renderBadge('cam_2')}
               </div>
-              <div className="aspect-[16/10] w-full bg-black">
+              <div className="aspect-[16/10] w-full bg-[#0c121e]">
                 <img
                   src={cam2Src}
                   alt="Camera 2 (Room 2 Connecting Door)"

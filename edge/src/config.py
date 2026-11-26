@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field, field_validator
 import yaml
 
@@ -95,8 +95,24 @@ class SystemConfig(BaseModel):
     cloud: CloudConfig = Field(default_factory=CloudConfig)
 
 
-def load_system_config(config_path: str = None) -> SystemConfig:
+def _load_dotenv_if_present(env_path: str = ".env") -> None:
+    p = Path(env_path)
+    if not p.is_file():
+        return
+    for raw_line in p.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
+def load_system_config(config_path: Optional[str] = None) -> SystemConfig:
     """Load YAML configuration and apply environment variable overrides."""
+    _load_dotenv_if_present()
     path_str = config_path or os.environ.get("WORKZONE_CONFIG_PATH", "configs/system_config.yaml")
     path = Path(path_str)
     data = {}
@@ -129,6 +145,8 @@ def load_system_config(config_path: str = None) -> SystemConfig:
         cfg.cloud.api_endpoint = os.environ["AWS_API_ENDPOINT"]
     if os.environ.get("AWS_API_KEY"):
         cfg.cloud.api_key = os.environ["AWS_API_KEY"]
+    elif os.environ.get("EDGE_INGEST_API_KEY"):
+        cfg.cloud.api_key = os.environ["EDGE_INGEST_API_KEY"]
     if os.environ.get("AWAY_ALERT_THRESHOLD_SECONDS"):
         cfg.cloud.away_alert_threshold_seconds = float(os.environ["AWAY_ALERT_THRESHOLD_SECONDS"])
 

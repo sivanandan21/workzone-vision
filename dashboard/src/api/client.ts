@@ -126,6 +126,20 @@ export async function runDemoScenario(session: AuthSession): Promise<{ events_in
   return handleResponse<{ events_ingested: number }>(resp);
 }
 
+export interface CameraStreamInfo {
+  live: boolean;
+  frames_received: number;
+  last_frame_age_sec: number | null;
+}
+
+export type StreamStatusResponse = Record<'cam_1' | 'cam_2', CameraStreamInfo>;
+
+export async function fetchStreamStatus(): Promise<StreamStatusResponse> {
+  const url = API_BASE ? `${API_BASE}/api/streams/status` : '/api/streams/status';
+  const resp = await fetch(url);
+  return handleResponse<StreamStatusResponse>(resp);
+}
+
 export function getStreamMjpegUrl(cameraId: string): string {
   return API_BASE ? `${API_BASE}/api/streams/${cameraId}/mjpeg` : `/api/streams/${cameraId}/mjpeg`;
 }

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import os
 import threading
 import time
 from typing import Optional, Union
 import cv2
 import numpy as np
+
+# Prefer TCP transport for reliable IP CCTV RTSP streams
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+logger = logging.getLogger("workzone.capture")
 
 
 @dataclass
@@ -74,11 +80,12 @@ class LatestFrameStream:
         cap: Optional[cv2.VideoCapture] = None
         while self._running:
             if cap is None or not cap.isOpened():
-                cap = cv2.VideoCapture(self.source)
+                cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG) if isinstance(self.source, str) else cv2.VideoCapture(self.source)
                 if not cap.isOpened():
+                    logger.warning("[%s] Unable to open source '%s'; retrying in %.1fs", self.camera_id, self.source, self.reconnect_delay_sec)
                     time.sleep(self.reconnect_delay_sec)
                     continue
-                # Request minimal internal OpenCV buffer when backend honors it
+                logger.info("[%s] Connected to video source '%s'", self.camera_id, self.source)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             ret, frame = cap.read()
