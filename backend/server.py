@@ -26,6 +26,13 @@ for p in (str(ROOT), str(LAMBDAS_DIR)):
 
 from away_watchdog.handler import check_overdue_outside_persons
 from backend.postgres_repository import PostgresStateRepository
+from backend.report_generator import (
+    build_report_data,
+    filter_logs_by_window,
+    generate_excel_report,
+    generate_pdf_report,
+    resolve_duration_window,
+)
 from backend.stream_manager import LiveStreamHub
 from dashboard_api.handler import handle_dashboard_request
 from ingest_processor.handler import process_crossing_payload
@@ -269,9 +276,75 @@ async def _delegate_dashboard(request: Request) -> Response:
     )
 
 
+@app.get("/api/logs/export")
+def export_report(
+    format: str = "pdf",
+    duration: str = "last_7d",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    tz_offset_minutes: int = 0,
+    person_id: Optional[str] = None,
+    verification_status: Optional[str] = None,
+) -> Response:
+    fmt = (format or "pdf").strip().lower()
+    if fmt not in ("pdf", "xlsx", "csv"):
+        raise HTTPException(status_code=400, detail="Unsupported format. Use pdf, xlsx, or csv.")
+
+    repo = get_repo()
+    try:
+        start_utc, end_utc, period_label = resolve_duration_window(
+            duration=duration,
+            start_date=start_date,
+            end_date=end_date,
+            tz_offset_minutes=tz_offset_minutes,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format (expected YYYY-MM-DD): {exc}",
+        ) from exc
+    all_logs = repo.list_movement_logs(
+        person_id=person_id or None,
+        verification_status=verification_status or None,
+        limit=5000,
+    )
+    filtered_logs = filter_logs_by_window(all_logs, start_utc, end_utc)
+
+    if fmt == "csv":
+        from shared.authority_actions import export_logs_to_csv
+        csv_body = export_logs_to_csv(filtered_logs)
+        return Response(
+            content=csv_body,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="workzone_report_{duration}.csv"'},
+        )
+
+    states = repo.list_person_states()
+    report_data = build_report_data(
+        logs=filtered_logs,
+        states=states,
+        period_label=period_label,
+        tz_offset_minutes=tz_offset_minutes,
+    )
+
+    if fmt == "xlsx":
+        xlsx_bytes = generate_excel_report(report_data)
+        return Response(
+            content=xlsx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="workzone_report_{duration}.xlsx"'},
+        )
+
+    pdf_bytes = generate_pdf_report(report_data)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="workzone_report_{duration}.pdf"'},
+    )
+
+
 @app.api_route("/api/state", methods=["GET"])
 @app.api_route("/api/logs", methods=["GET"])
-@app.api_route("/api/logs/export", methods=["GET"])
 @app.api_route("/api/logs/{log_id}/verify", methods=["POST"])
 @app.api_route("/api/logs/{log_id}/flag", methods=["POST"])
 @app.api_route("/api/logs/{log_id}/adjust", methods=["PATCH"])

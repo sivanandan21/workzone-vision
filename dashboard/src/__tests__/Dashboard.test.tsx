@@ -44,7 +44,7 @@ describe('WorkZone Vision Simple Monitor UI', () => {
     vi.unstubAllGlobals();
   });
 
-  it('triggers CSV download when clicking Generate Report', async () => {
+  it('opens report options modal and downloads PDF and Excel reports for selected duration', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes('/api/streams/status')) {
         return {
@@ -55,29 +55,58 @@ describe('WorkZone Vision Simple Monitor UI', () => {
           }),
         };
       }
+      const isXlsx = url.includes('format=xlsx');
       return {
         ok: true,
-        text: async () => 'log_id,timestamp,person_id\n',
+        headers: new Headers({
+          'Content-Disposition': `attachment; filename="workzone_report.${isXlsx ? 'xlsx' : 'pdf'}"`,
+        }),
+        blob: async () => new Blob([isXlsx ? 'PK' : '%PDF-'], {
+          type: isXlsx
+            ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            : 'application/pdf',
+        }),
       };
     });
     vi.stubGlobal('fetch', fetchMock);
-    const createUrlMock = vi.fn(() => 'blob:mock-csv');
+    const createUrlMock = vi.fn(() => 'blob:mock-report');
     const revokeUrlMock = vi.fn();
     Object.defineProperty(URL, 'createObjectURL', { value: createUrlMock, configurable: true });
     Object.defineProperty(URL, 'revokeObjectURL', { value: revokeUrlMock, configurable: true });
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Generate Report/i }));
 
+    // 1. Open modal and download default PDF (Last 7 Days)
+    fireEvent.click(screen.getByRole('button', { name: /Generate Report/i }));
+    expect(screen.getByRole('dialog', { name: /Generate Movement Report/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Download PDF/i }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('/api/logs/export'),
+        expect.stringMatching(/\/api\/logs\/export\?format=pdf&duration=last_7d/),
         expect.any(Object),
       );
       expect(createUrlMock).toHaveBeenCalled();
       expect(clickSpy).toHaveBeenCalled();
-      expect(revokeUrlMock).toHaveBeenCalledWith('blob:mock-csv');
+      expect(revokeUrlMock).toHaveBeenCalledWith('blob:mock-report');
+    });
+
+    // 2. Re-open modal, pick Custom Date Range + Excel (.xlsx), and download
+    fireEvent.click(screen.getByRole('button', { name: /Generate Report/i }));
+    fireEvent.change(screen.getByLabelText(/Report Duration/i), { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText(/From Date/i), { target: { value: '2026-11-01' } });
+    fireEvent.change(screen.getByLabelText(/To Date/i), { target: { value: '2026-11-26' } });
+    fireEvent.click(screen.getByRole('button', { name: /Excel \(\.xlsx\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Download XLSX/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /\/api\/logs\/export\?format=xlsx&duration=custom.*start_date=2026-11-01&end_date=2026-11-26/,
+        ),
+        expect.any(Object),
+      );
     });
 
     clickSpy.mockRestore();

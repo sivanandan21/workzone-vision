@@ -96,6 +96,51 @@ export async function adjustMovementTimestamp(
   return data.log;
 }
 
+export type ReportFormat = 'pdf' | 'xlsx';
+
+export type ReportDuration =
+  | 'today'
+  | 'last_24h'
+  | 'last_7d'
+  | 'last_30d'
+  | 'all'
+  | 'custom';
+
+export interface ReportExportOptions {
+  format: ReportFormat;
+  duration: ReportDuration;
+  startDate?: string;
+  endDate?: string;
+}
+
+export async function downloadReport(
+  session: AuthSession,
+  options: ReportExportOptions,
+): Promise<{ blob: Blob; filename: string }> {
+  const params = new URLSearchParams();
+  params.set('format', options.format);
+  params.set('duration', options.duration);
+  params.set('tz_offset_minutes', String(-new Date().getTimezoneOffset()));
+  if (options.duration === 'custom') {
+    if (options.startDate) params.set('start_date', options.startDate);
+    if (options.endDate) params.set('end_date', options.endDate);
+  }
+  const resp = await fetch(`${API_BASE}/api/logs/export?${params.toString()}`, {
+    headers: buildHeaders(session, false),
+  });
+  if (!resp.ok) {
+    const errText = typeof resp.text === 'function' ? await resp.text() : '';
+    throw new Error(errText || `Export failed with HTTP ${resp.status}`);
+  }
+  const blob = await resp.blob();
+  const disposition = resp.headers?.get?.('Content-Disposition') ?? '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const filename =
+    match?.[1] || `workzone_report_${options.duration}_${dateStamp}.${options.format}`;
+  return { blob, filename };
+}
+
 export async function exportLogsCsv(
   session: AuthSession,
   filters?: { person_id?: string; verification_status?: string; event_type?: string },

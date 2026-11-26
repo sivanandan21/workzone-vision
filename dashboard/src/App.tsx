@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { FileText, RefreshCw, Shield } from 'lucide-react';
 import {
-  exportLogsCsv,
+  downloadReport,
   fetchStreamStatus,
   getStreamMjpegUrl,
   getStreamSnapshotUrl,
+  type ReportExportOptions,
   type StreamStatusResponse,
 } from './api/client';
+import { ReportDownloadModal } from './components/ReportDownloadModal';
 import type { AuthSession } from './types/workzone';
 
 const DEFAULT_SESSION: AuthSession = {
@@ -18,6 +20,8 @@ export function App() {
   const [liveFeed, setLiveFeed] = useState<boolean>(true);
   const [streamVersion, setStreamVersion] = useState<number>(() => Date.now());
   const [exporting, setExporting] = useState<boolean>(false);
+  const [reportModalOpen, setReportModalOpen] = useState<boolean>(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatusResponse>({
     cam_1: { live: false, frames_received: 0, last_frame_age_sec: null },
     cam_2: { live: false, frames_received: 0, last_frame_age_sec: null },
@@ -38,19 +42,20 @@ export function App() {
     return () => clearInterval(timer);
   }, [pollStatus]);
 
-  const handleGenerateReport = async () => {
+  const handleDownloadReport = async (options: ReportExportOptions) => {
     setExporting(true);
+    setReportError(null);
     try {
-      const csv = await exportLogsCsv(DEFAULT_SESSION);
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const { blob, filename } = await downloadReport(DEFAULT_SESSION, options);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `workzone_report_${new Date().toISOString().slice(0, 10)}.csv`;
+      link.download = filename;
       link.click();
       URL.revokeObjectURL(url);
+      setReportModalOpen(false);
     } catch (err) {
-      console.error('Report generation failed:', err);
+      setReportError(err instanceof Error ? err.message : 'Unable to download report.');
     } finally {
       setExporting(false);
     }
@@ -105,12 +110,14 @@ export function App() {
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => void handleGenerateReport()}
-              disabled={exporting}
-              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-blue-500 disabled:opacity-60"
+              onClick={() => {
+                setReportError(null);
+                setReportModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-blue-500"
             >
               <FileText className="h-3.5 w-3.5" />
-              {exporting ? 'Generating...' : 'Generate Report'}
+              Generate Report
             </button>
 
             <div className="flex items-center gap-2 pl-1">
@@ -190,6 +197,16 @@ export function App() {
           </div>
         </section>
       </main>
+
+      <ReportDownloadModal
+        isOpen={reportModalOpen}
+        exporting={exporting}
+        errorMessage={reportError}
+        onClose={() => {
+          if (!exporting) setReportModalOpen(false);
+        }}
+        onDownload={handleDownloadReport}
+      />
     </div>
   );
 }
