@@ -13,8 +13,10 @@ if [ ! -f /swapfile ]; then
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/apt/fstab >/dev/null
 fi
 
-# 2. Base utilities + OpenJDK 21 (required by current Jenkins LTS)
+# 2. Remove Java 17 if installed by an earlier run, then install OpenJDK 21 (required by Jenkins LTS)
 sudo apt-get update -y
+sudo apt-get purge -y 'openjdk-17-*' || true
+sudo apt-get autoremove -y || true
 sudo apt-get install -y ca-certificates curl gnupg wget git openssl fontconfig openjdk-21-jre-headless
 
 if [ -x /usr/lib/jvm/java-21-openjdk-amd64/bin/java ]; then
@@ -64,16 +66,18 @@ EOF
     echo "Generated /opt/workzone-vision/.env with secure random credentials."
 fi
 
-# 5. Configure Java 21 systemd override, recover any half-configured package, and install Jenkins LTS
+# 5. Configure Java 21 systemd override, clear systemd failed rate-limit, and install/fix Jenkins LTS
 sudo mkdir -p /etc/systemd/system/jenkins.service.d
 cat <<EOF | sudo tee /etc/systemd/system/jenkins.service.d/java21.conf >/dev/null
 [Service]
 Environment="JAVA_HOME=${JAVA_HOME_DIR}"
+Environment="JENKINS_JAVA_CMD=${JAVA_BIN}"
 TimeoutStartSec=300
 EOF
 sudo systemctl daemon-reload
+sudo systemctl reset-failed jenkins.service || true
 
-# Recover if an earlier run left jenkins half-configured under Java 17
+# Recover cleanly if an earlier run left jenkins half-configured under Java 17
 sudo dpkg --configure -a || true
 
 if ! dpkg-query -W -f='${Status}' jenkins 2>/dev/null | grep -q "install ok installed"; then
@@ -93,6 +97,7 @@ sudo usermod -aG docker jenkins || true
 sudo chown -R ubuntu:docker /opt/workzone-vision
 sudo chown ubuntu:docker /opt/workzone-vision/.env
 sudo systemctl enable --now docker
+sudo systemctl reset-failed jenkins.service || true
 
 if ! sudo systemctl restart jenkins; then
     echo "WARNING: Jenkins failed to start. Showing recent journal logs:"
