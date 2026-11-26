@@ -13,9 +13,17 @@ if [ ! -f /swapfile ]; then
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/apt/fstab >/dev/null
 fi
 
-# 2. Base utilities
+# 2. Base utilities + OpenJDK 21 (required by current Jenkins LTS)
 sudo apt-get update -y
-sudo apt-get install -y ca-certificates curl gnupg wget git openssl fontconfig openjdk-17-jre
+sudo apt-get install -y ca-certificates curl gnupg wget git openssl fontconfig openjdk-21-jre-headless
+
+if [ -x /usr/lib/jvm/java-21-openjdk-amd64/bin/java ]; then
+    sudo update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java || true
+fi
+JAVA_BIN=$(readlink -f "$(command -v java)")
+JAVA_HOME_DIR=$(dirname "$(dirname "$JAVA_BIN")")
+echo "Using Java binary: $JAVA_BIN (JAVA_HOME=$JAVA_HOME_DIR)"
+java -version
 
 # 3. Install Docker Engine + Compose plugin (official Ubuntu apt repository)
 if ! command -v docker >/dev/null 2>&1; then
@@ -31,28 +39,9 @@ if ! command -v docker >/dev/null 2>&1; then
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 
-# 4. Install Jenkins LTS (2026 signing key)
-if ! systemctl list-unit-files | grep -q '^jenkins\.service'; then
-    echo "Installing Jenkins LTS..."
-    sudo mkdir -p /etc/apt/keyrings
-    sudo wget -O /etc/apt/keyrings/jenkins-keyring.asc \
-        https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
-    echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | \
-        sudo tee /etc/apt/sources.list.d/jenkins.list >/dev/null
-    sudo apt-get update -y
-    sudo apt-get install -y jenkins
-fi
-
-# 5. Grant Docker access to ubuntu and jenkins users
-sudo usermod -aG docker ubuntu || true
-sudo usermod -aG docker jenkins || true
-sudo systemctl enable --now docker
-sudo systemctl enable --now jenkins
-sudo systemctl restart jenkins
-
-# 6. Prepare persistent /opt/workzone-vision directory & .env secrets (outside Git)
+# 4. Prepare persistent /opt/workzone-vision directory & .env secrets BEFORE Jenkins startup
 sudo mkdir -p /opt/workzone-vision/models /opt/workzone-vision/enrolled_students /opt/workzone-vision/backups
-sudo chown -R ubuntu:docker /opt/workzone-vision
+sudo chown -R ubuntu:docker /opt/workzone-vision || sudo chown -R ubuntu:ubuntu /opt/workzone-vision
 sudo chmod -R 775 /opt/workzone-vision
 
 if [ ! -f /opt/workzone-vision/.env ]; then
@@ -71,10 +60,46 @@ CORS_ORIGINS=*
 CAM_1_SOURCE=rtsp://admin:password@192.168.1.101:554/stream1
 CAM_2_SOURCE=rtsp://admin:password@192.168.1.102:554/stream1
 EOF
-    sudo chown ubuntu:docker /opt/workzone-vision/.env
     sudo chmod 640 /opt/workzone-vision/.env
     echo "Generated /opt/workzone-vision/.env with secure random credentials."
 fi
+
+# 5. Configure Java 21 systemd override, recover any half-configured package, and install Jenkins LTS
+sudo mkdir -p /etc/systemd/system/jenkins.service.d
+cat <<EOF | sudo tee /etc/systemd/system/jenkins.service.d/java21.conf >/dev/null
+[Service]
+Environment="JAVA_HOME=${JAVA_HOME_DIR}"
+TimeoutStartSec=300
+EOF
+sudo systemctl daemon-reload
+
+# Recover if an earlier run left jenkins half-configured under Java 17
+sudo dpkg --configure -a || true
+
+if ! dpkg-query -W -f='${Status}' jenkins 2>/dev/null | grep -q "install ok installed"; then
+    echo "Installing Jenkins LTS..."
+    sudo mkdir -p /etc/apt/keyrings
+    sudo wget -O /etc/apt/keyrings/jenkins-keyring.asc \
+        https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+    echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | \
+        sudo tee /etc/apt/sources.list.d/jenkins.list >/dev/null
+    sudo apt-get update -y
+    sudo apt-get install -y jenkins
+fi
+
+# 6. Grant Docker access to ubuntu and jenkins users
+sudo usermod -aG docker ubuntu || true
+sudo usermod -aG docker jenkins || true
+sudo chown -R ubuntu:docker /opt/workzone-vision
+sudo chown ubuntu:docker /opt/workzone-vision/.env
+sudo systemctl enable --now docker
+
+if ! sudo systemctl restart jenkins; then
+    echo "WARNING: Jenkins failed to start. Showing recent journal logs:"
+    sudo journalctl -u jenkins.service -n 40 --no-pager || true
+    exit 1
+fi
+sudo systemctl enable jenkins
 
 PUBLIC_IP=$(curl -s --max-time 3 http://checkip.amazonaws.com || echo "43.204.146.167")
 

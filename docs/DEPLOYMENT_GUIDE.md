@@ -18,7 +18,7 @@ cd ~/workzone-vision
 bash deploy/scripts/ec2-bootstrap.sh
 ```
 
-This installs Docker + Compose, Java 17 + Jenkins LTS (`jenkins.io-2026.key`), configures a 4 GB swap file, adds `ubuntu` and `jenkins` to the `docker` group, generates `/opt/workzone-vision/.env`, and prints your initial Jenkins admin password.
+This installs Docker + Compose, Java 21 + Jenkins LTS (`jenkins.io-2026.key`), configures a 4 GB swap file, adds `ubuntu` and `jenkins` to the `docker` group, generates `/opt/workzone-vision/.env`, and prints your initial Jenkins admin password.
 
 ### C. Deploy Immediately (PostgreSQL + Backend + Dashboard)
 ```bash
